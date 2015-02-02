@@ -3391,11 +3391,12 @@ contains
     end do
   end subroutine zmultifab_print
 
-  subroutine mf_copy_fancy_double(mdst, dstcomp, msrc, srccomp, nc, filter, bndry_reg_to_other)
+  subroutine mf_copy_fancy_double(mdst, dstcomp, msrc, srccomp, nc, filter, bndry_reg_to_other, ng)
     type(multifab), intent(inout) :: mdst
     type(multifab), intent(in)    :: msrc
     integer, intent(in)           :: dstcomp, srccomp, nc
     logical, intent(in), optional :: bndry_reg_to_other
+    integer, intent(in), optional :: ng
 
     interface
        subroutine filter(out, in)
@@ -3414,14 +3415,34 @@ contains
     integer                 :: i, ii, jj, sh(MAX_SPACEDIM+1), np
     real(dp_t), allocatable :: g_snd_d(:), g_rcv_d(:)
     logical                 :: br_to_other
-    
+    integer                 :: lng
+    type(list_box)          :: bl
+    type(boxarray)          :: batmp
+    type(layout)            :: ladsttmp
+
     br_to_other = .false.  
     if (present(bndry_reg_to_other)) br_to_other = bndry_reg_to_other
+
+    lng=0 ; if (present(ng)) lng=ng
 
     if (br_to_other) then
        call copyassoc_build_br_to_other(cpasc, mdst%la, msrc%la, mdst%nodal, msrc%nodal)
     else
-       cpasc = layout_copyassoc(mdst%la, msrc%la, mdst%nodal, msrc%nodal)
+       if (lng.eq.0) then
+          cpasc = layout_copyassoc(mdst%la, msrc%la, mdst%nodal, msrc%nodal)
+       else
+          ! grow layout of mdst by number of ghost cells in order to get
+          ! copyassoc which covers ghost cells
+          do i=1,nboxes(mdst%la)
+             call push_back(bl,grow(box_nodalize(get_box(mdst%la,i),mdst%nodal),lng))
+          end do
+          call build(batmp,bl,sort=.false.)
+          call destroy(bl)
+          call build(ladsttmp,batmp,boxarray_bbox(batmp),explicit_mapping=get_proc(mdst%la))
+          call destroy(batmp)
+          cpasc = layout_copyassoc(ladsttmp, msrc%la, mdst%nodal, msrc%nodal)
+          call destroy(ladsttmp)
+       end if
     end if
 
     !$OMP PARALLEL DO PRIVATE(i,ii,jj,pdst,psrc) if (cpasc%l_con%threadsafe)
@@ -3472,6 +3493,8 @@ contains
     !$OMP END PARALLEL DO    
 
     if (br_to_other) call copyassoc_destroy(cpasc)
+    call destroy(ladsttmp)
+    call destroy(batmp)
 
   end subroutine mf_copy_fancy_double
 
@@ -3711,7 +3734,7 @@ contains
        end do
        !$OMP END PARALLEL DO
     else
-       if (lng    >       0) call bl_error('MULTIFAB_COPY_C: ng > 0 not supported in parallel copy')
+       if (lng    > mdst%ng) call bl_error('MULTIFAB_COPY_C: ng > mdst%ng')
        if (lngsrc > msrc%ng) call bl_error('MULTIFAB_COPY_C: ngsrc > msrc%ng')
 
        if (lngsrc > 0) then
@@ -3739,7 +3762,7 @@ contains
           scomp = srccomp
        end if
 
-       call mf_copy_fancy_double(mdst, dstcomp, pmfsrc, scomp, lnc, filter, bndry_reg_to_other)
+       call mf_copy_fancy_double(mdst, dstcomp, pmfsrc, scomp, lnc, filter, bndry_reg_to_other, ng=lng)
 
        if (lngsrc > 0) then
           call destroy(msrctmp)
